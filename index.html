@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Gym & Nutrition Tracker</title>
+  <meta name="description" content="Offline-first minimal PWA for workouts, hydration, and macros." />
+
+  <!-- iOS PWA meta -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Gym Tracker" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#0b0f14" />
+
+  <style>
+    :root{
+      --bg:#0b0f14; --fg:#e5e7eb; --muted:#94a3b8; --card:#111827; --accent:#22c55e;
+      --border:#1f2937; --ring:#10b981; --danger:#ef4444; --warn:#f59e0b; --ok:#22c55e;
+      --lightbg:#f8fafc; --lightfg:#0f172a; --lightcard:#ffffff; --lightmuted:#475569; --lightborder:#e2e8f0;
+    }
+    @media (prefers-color-scheme: light){
+      body{background:var(--lightbg); color:var(--lightfg);} .card{background:var(--lightcard); border-color:var(--lightborder);} .muted{color:var(--lightmuted);} .tabbar{background:#ffffff;border-color:var(--lightborder);} .input, .select, .btn{border-color:var(--lightborder);} .divider{border-color:var(--lightborder);} .progress{background:#e5e7eb;}
+    }
+    @media (prefers-color-scheme: dark){
+      body{background:var(--bg); color:var(--fg);} .card{background:var(--card); border-color:var(--border);} .muted{color:var(--muted);} .tabbar{background:#0c131a;border-color:var(--border);} .input, .select, .btn{border-color:var(--border);} .divider{border-color:var(--border);} .progress{background:#1f2937;}
+    }
+    *{box-sizing:border-box} html,body{height:100%} body{margin:0;font:16px system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial,sans-serif;}
+    .container{max-width:980px;margin:0 auto;padding:16px;padding-bottom:90px}
+    .grid{display:grid;gap:12px}
+    .card{border:1px solid; border-radius:16px; padding:14px; box-shadow:0 1px 0 rgba(0,0,0,.04)}
+    .row{display:flex;gap:10px;align-items:center}
+    .row.wrap{flex-wrap:wrap}
+    .space{flex:1}
+    .btn{border:1px solid; border-radius:12px; padding:10px 12px; background:transparent; color:inherit; cursor:pointer}
+    .btn.primary{background:var(--accent); border-color:transparent; color:#071b0f; font-weight:600}
+    .btn.ghost{opacity:.9}
+    .btn.danger{background:var(--danger); border-color:transparent; color:white}
+    .btn.warn{background:var(--warn); border-color:transparent; color:black}
+    .btn.small{padding:6px 10px; border-radius:10px}
+    .btn.icon{padding:8px; width:40px; height:40px; display:inline-grid; place-items:center}
+    .input, .select, .textarea{width:100%; padding:10px 12px; border-radius:12px; border:1px solid; background:transparent; color:inherit}
+    .textarea{min-height:80px; resize:vertical}
+    .label{font-size:12px; opacity:.8}
+    .h1{font-size:22px; font-weight:700}
+    .h2{font-size:18px; font-weight:650}
+    .muted{font-size:12px}
+    .tag{padding:4px 8px; border-radius:999px; border:1px solid; font-size:12px}
+    .ring{outline:2px solid var(--ring); outline-offset:2px; border-radius:14px}
+    .divider{border-top:1px solid; margin:12px 0}
+    .tabbar{position:fixed; bottom:0; left:0; right:0; display:flex; gap:6px; padding:10px; border-top:1px solid; backdrop-filter: blur(6px);}
+    .tab{flex:1}
+    .kpi{display:flex; align-items:center; gap:8px}
+    .kpi .num{font-weight:800; font-size:22px}
+    .progress{height:10px; border-radius:999px; overflow:hidden}
+    .progress > div{height:100%}
+    .section-title{display:flex; align-items:center; justify-content:space-between}
+    .pill{border:1px solid; border-radius:999px; padding:6px 8px; font-size:12px}
+    .hidden{display:none !important}
+    .link{color:var(--ring); text-decoration:none}
+  </style>
+</head>
+<body>
+  <div id="app" class="container grid"></div>
+  <nav class="tabbar">
+    <button class="btn tab" data-tab="home">Home</button>
+    <button class="btn tab" data-tab="workouts">Workouts</button>
+    <button class="btn tab" data-tab="nutrition">Nutrition</button>
+    <button class="btn tab" data-tab="hydration">Hydration</button>
+    <button class="btn tab" data-tab="more">More</button>
+  </nav>
+
+  <script>
+  // ======= UTILITIES & STATE =======
+  if (!('crypto' in window) || typeof crypto.randomUUID !== 'function') {
+    window.crypto = window.crypto || {};
+    crypto.randomUUID = function(){
+      var s = []; var hex = '0123456789abcdef';
+      for (var i=0;i<36;i++){ s[i]=hex[Math.floor(Math.random()*16)]; }
+      s[14] = '4';
+      s[19] = hex[(parseInt(s[19],16)&0x3)|0x8];
+      s[8]=s[13]=s[18]=s[23]='-';
+      return s.join('');
+    };
+  }
+  var uid = function(){ return crypto.randomUUID(); };
+  var todayISO = function(){ return new Date().toISOString().slice(0,10); };
+  var fmtTime = function(d){ d=d||new Date(); return d.toTimeString().slice(0,5); };
+
+  var DB_NAME = 'gymtracker_db';
+  var DB_VERSION = 1;
+  var db;
+  function openDB(){
+    return new Promise(function(resolve, reject){
+      var req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = function(){
+        var db = req.result;
+        if(!db.objectStoreNames.contains('settings')) db.createObjectStore('settings', {keyPath:'id'});
+        if(!db.objectStoreNames.contains('exercises')) db.createObjectStore('exercises', {keyPath:'id'});
+        if(!db.objectStoreNames.contains('templates')) db.createObjectStore('templates', {keyPath:'id'});
+        if(!db.objectStoreNames.contains('sessions')) db.createObjectStore('sessions', {keyPath:'id'});
+        if(!db.objectStoreNames.contains('nutrition')) db.createObjectStore('nutrition', {keyPath:'id'});
+        if(!db.objectStoreNames.contains('hydration')) db.createObjectStore('hydration', {keyPath:'id'});
+        if(!db.objectStoreNames.contains('body')) db.createObjectStore('body', {keyPath:'id'});
+      };
+      req.onsuccess = function(){ db = req.result; resolve(db); };
+      req.onerror = function(){ reject(req.error); };
+    });
+  }
+  function tx(name, mode){ return db.transaction(name, mode||'readonly').objectStore(name); }
+  function put(store, val){ return new Promise(function(res, rej){ var r = tx(store, 'readwrite').put(val); r.onsuccess=function(){res(val)}; r.onerror=function(){rej(r.error)}; }); }
+  function get(store, key){ return new Promise(function(res, rej){ var r = tx(store).get(key); r.onsuccess=function(){res(r.result)}; r.onerror=function(){rej(r.error)}; }); }
+  function all(store){ return new Promise(function(res, rej){ var r = tx(store).getAll(); r.onsuccess=function(){res(r.result)}; r.onerror=function(){rej(r.error)}; }); }
+  function del_(store, key){ return new Promise(function(res, rej){ var r = tx(store, 'readwrite').delete(key); r.onsuccess=function(){res()}; r.onerror=function(){rej(r.error)}; }); }
+
+  var DEFAULTS = {
+    id: 'user', theme:'system', units:{weight:'kg', volume:'ml'}, timeFormat:'24h',
+    restDefaults:{strength:120, hypertrophy:90, endurance:60},
+    waterTarget: 2500, dailyCalorieTarget: 2400,
+    macroTargets:{protein:150, carbs:300, fat:70},
+    notifications:{rest:true, water:false, remindersTimes:['10:00','14:00','18:00']},
+    pwa:{installed:false, lastPromptDate:null}
+  };
+
+  function ensureNotify(){
+    return new Promise(function(resolve){
+      try{
+        if(!('Notification' in window)) return resolve(false);
+        if(Notification.permission === 'granted') return resolve(true);
+        if(Notification.permission !== 'denied'){
+          Notification.requestPermission().then(function(p){ resolve(p==='granted'); }).catch(function(){ resolve(false); });
+          return;
+        }
+      }catch(e){}
+      resolve(false);
+    });
+  }
+  function beep(){
+    try{
+      var C = window.AudioContext||window.webkitAudioContext; if(!C) return;
+      var ctx = new C();
+      var o = ctx.createOscillator(); var g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination); o.type='sine'; o.frequency.value=900; g.gain.value=0.02;
+      o.start(); setTimeout(function(){o.stop(); ctx.close();}, 600);
+    }catch(e){}
+  }
+
+  // Register Service Worker (requires HTTPS)
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js').catch(function(){});
+  }
+
+  // ======= DATA LAYERS =======
+  var Settings = {
+    get: function(){ return get('settings','user').then(function(v){ return v||DEFAULTS; }); },
+    save: function(p){ return Settings.get().then(function(cur){ return put('settings', Object.assign({}, cur, p)); }); }
+  };
+
+  function getHydration(date){
+    var d = date || todayISO();
+    var key = 'hydration-'+d;
+    return Settings.get().then(function(s){
+      return get('hydration', key).then(function(v){
+        return v || {id:key, date:d, target:s.waterTarget, entries:[], total:0};
+      });
+    });
+  }
+  function saveHydration(h){
+    h.total = h.entries.reduce(function(a,b){ return a + (b.amount||0); }, 0);
+    return put('hydration', h).then(function(){ return h; });
+  }
+
+  function getNutrition(date){
+    var d = date || todayISO();
+    var key = 'nutrition-'+d;
+    return Settings.get().then(function(s){
+      return get('nutrition', key).then(function(v){
+        return v || { id:key, date:d, targetCalories:s.dailyCalorieTarget, targetMacros:s.macroTargets, entries:[], totals:{calories:0,protein:0,carbs:0,fat:0} };
+      });
+    });
+  }
+  function saveNutrition(n){
+    n.totals = n.entries.reduce(function(acc,e){
+      return { calories: acc.calories + (+e.calories||0), protein: acc.protein + (+e.protein||0), carbs: acc.carbs + (+e.carbs||0), fat: acc.fat + (+e.fat||0) };
+    }, {calories:0, protein:0, carbs:0, fat:0});
+    return put('nutrition', n).then(function(){ return n; });
+  }
+
+  function listTemplates(){ return all('templates'); }
+  function saveTemplate(t){ if(!t.id) t.id=uid(); t.updatedAt=new Date().toISOString(); t.createdAt=t.createdAt||t.updatedAt; return put('templates', t); }
+  function deleteTemplate(id){ return del_('templates', id); }
+
+  function listSessions(){ return all('sessions').then(function(arr){ return arr.sort(function(a,b){ return (b.date||'').localeCompare(a.date||''); }); }); }
+  function saveSession(s){ if(!s.id) s.id=uid(); s.updatedAt=new Date().toISOString(); s.createdAt=s.createdAt||s.updatedAt; return put('sessions', s); }
+  function deleteSession(id){ return del_('sessions', id); }
+
+  function listExercises(){
+    return all('exercises').then(function(arr){
+      if(arr.length===0){
+        var now = new Date().toISOString();
+        var seed = ['Bench Press','Incline DB Press','Lat Pulldown','Row (Cable)','Squat','Deadlift','Leg Press','RDL','Ham Curl','Leg Extension','Shoulder Press','Lateral Raise','Rear Delt Fly','Bicep Curl','Tricep Pushdown']
+          .map(function(name){ return {id:uid(), name:name, muscleGroup:'Mixed', type:'compound', isCustom:false, createdAt:now, updatedAt:now}; });
+        return Promise.all(seed.map(function(s){ return put('exercises', s); })).then(function(){ return all('exercises'); });
+      }
+      return arr;
+    }).then(function(a){ return a.sort(function(x,y){ return x.name.localeCompare(y.name); }); });
+  }
+
+  function exportAll(){
+    return Promise.all([all('settings'), all('exercises'), all('templates'), all('sessions'), all('nutrition'), all('hydration'), all('body')]).then(function(parts){
+      var payload = {version:1, exportedAt:new Date().toISOString(), settings:parts[0], exercises:parts[1], templates:parts[2], sessions:parts[3], nutrition:parts[4], hydration:parts[5], body:parts[6]};
+      var blob = new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
+      var a = document.createElement('a'); a.href=URL.createObjectURL(blob); a.download = 'gym-tracker-backup-'+Date.now()+'.json'; a.click();
+    });
+  }
+  function importAll(file){
+    return file.text().then(function(text){
+      var data = JSON.parse(text);
+      var order = {settings:[], exercises:[], templates:[], sessions:[], nutrition:[], hydration:[], body:[]};
+      Object.keys(order).forEach(function(k){ if(Array.isArray(data[k])) order[k]=data[k]; });
+      return Object.entries(order).reduce(function(p,[store, arr]){
+        return p.then(function(){ return arr.reduce(function(pp,item){ return pp.then(function(){ return put(store, item); }); }, Promise.resolve()); });
+      }, Promise.resolve()).then(function(){ return true; });
+    });
+  }
+
+  // ======= UI =======
+  var app = document.getElementById('app');
+  var CURRENT_TAB = 'home';
+  function setTab(tab){ CURRENT_TAB = tab; render(); }
+  [].slice.call(document.querySelectorAll('.tab')).forEach(function(b){ b.addEventListener('click', function(){ setTab(b.dataset.tab); }); });
+
+  function el(tag, attrs, children){
+    var n = document.createElement(tag);
+    attrs = attrs||{};
+    for(var k in attrs){
+      var v = attrs[k];
+      if(k.slice(0,2)==='on') n.addEventListener(k.slice(2), v);
+      else if(v===false || v==null){} else if(k==='class') n.className=v; else n.setAttribute(k,v);
+    }
+    (Array.isArray(children)?children:[children]).filter(Boolean).forEach(function(c){ n.append(c && c.nodeType ? c : document.createTextNode(c)); });
+    return n;
+  }
+
+  function ringProgress(pct){
+    var clamped = Math.max(0, Math.min(100, Math.round(pct)));
+    return el('div',{class:'progress', title:String(clamped)+'%'}, [el('div',{style:'width:'+clamped+'%; background: var(--ring)'})]);
+  }
+
+  function RestBadge(restTimer){
+    if(!restTimer.active) return el('span',{class:'pill muted'},'Rest: inactive');
+    var left = Math.max(0, Math.ceil((restTimer.end - Date.now())/1000));
+    return el('span',{id:'restBadge', class:'pill'}, left+'s');
+  }
+
+  // Global rest timer state
+  var restTimer = {active:false, end:0, duration:90, iv:null};
+  function startRest(sec){
+    restTimer.active=true; restTimer.duration=sec; restTimer.end=Date.now()+sec*1000;
+    clearInterval(restTimer.iv);
+    restTimer.iv = setInterval(function(){
+      if(Date.now()>=restTimer.end){
+        clearInterval(restTimer.iv); restTimer.active=false; beep();
+        ensureNotify().then(function(ok){ if(ok) new Notification('Rest done', {body:String(sec)+'s rest finished'}); });
+        render();
+      }else{
+        var left = Math.ceil((restTimer.end - Date.now())/1000);
+        var badge = document.querySelector('#restBadge');
+        if(badge) badge.textContent = left+'s';
+      }
+    }, 250);
+    render();
+  }
+
+  function ExerciseBlock(session, ex){
+    function setRow(set, idx){
+      return el('div',{class:'row',style:'gap:6px; margin:6px 0'},[
+        el('span',{class:'pill'}, String(idx+1)),
+        el('input',{class:'input',type:'number',placeholder:'Reps', value:(set.actualReps!=null?set.actualReps:(set.targetReps||'')), style:'width:90px', oninput:function(evt){ set.actualReps = +evt.target.value; }}),
+        el('input',{class:'input',type:'number',placeholder:'Weight', value:(set.weight!=null?set.weight:''), style:'width:110px', oninput:function(evt){ set.weight = +evt.target.value; }}),
+        el('input',{class:'input',type:'number',placeholder:'RPE', value:(set.rpe!=null?set.rpe:''), style:'width:90px', oninput:function(evt){ set.rpe = +evt.target.value; }}),
+        el('button',{class:'btn small', onclick:function(){ set.completedAt = new Date().toISOString(); startRest( (set.restSec || 90) ); saveSession(session).then(render);} }, set.completedAt?'✓ Rest':'Log + Rest'),
+        el('button',{class:'btn ghost small', onclick:function(){ set.completedAt=null; saveSession(session).then(render);} }, 'Undo')
+      ]);
+    }
+
+    return el('div',{class:'card'},[
+      el('div',{class:'row'},[
+        el('div',{class:'h2'}, ex.nameSnapshot),
+        el('div',{class:'space'}),
+        el('button',{class:'btn small',onclick:function(){ ex.sets.push({id:uid(), targetReps:8}); saveSession(session).then(render);} },'+ Set'),
+        el('button',{class:'btn danger small',onclick:function(){ var i=(session.entries||[]).indexOf(ex); if(i>-1){ session.entries.splice(i,1); saveSession(session).then(render);} }},'Remove Exercise')
+      ]),
+      ].concat(ex.sets.map(function(set,i){ return setRow(set,i); }))
+    );
+  }
+
+  function CardTemplate(t){
+    return el('div',{class:'card'},[
+      el('div',{class:'row'},[
+        el('div',{class:'h2'}, t.name),
+        el('div',{class:'space'}),
+        el('button',{class:'btn small',onclick:function(){ startFromTemplate(t); }},'Start'),
+        el('button',{class:'btn ghost small',onclick:function(){ editTemplate(t); }},'Edit'),
+        el('button',{class:'btn danger small',onclick:function(){ if(confirm('Delete template?')){ deleteTemplate(t.id).then(render); } }},'Delete')
+      ]),
+      el('div',{class:'muted'}, String(t.description||'')),
+      el('div',{class:'grid',style:'margin-top:6px'}, (t.exercises||[]).sort(function(a,b){return a.order-b.order}).map(function(e){
+        return el('div',{class:'row'},[
+          el('span',{class:'pill'}, String(e.order+1)), el('div',{}, e.nameSnapshot || e.exerciseName || e.exerciseId),
+          el('div',{class:'space'}), el('span',{class:'muted'}, String((e.defaultSets||3)+'x'+(e.defaultReps||8)+(e.defaultWeight? ' @'+e.defaultWeight: '')))
+        ]);
+      }))
+    ]);
+  }
+
+  function CardSession(s){
+    return el('div',{class:'card'},[
+      el('div',{class:'row'},[
+        el('div',{class:'h2'}, s.name || 'Workout'),
+        el('div',{class:'space'}),
+        el('span',{class:'pill'}, s.completed?'Done':'Active'),
+        el('button',{class:'btn small',onclick:function(){ openSession(s); }},'Open'),
+        el('button',{class:'btn danger small',onclick:function(){ if(confirm('Delete session?')){ deleteSession(s.id).then(render); } }},'Delete')
+      ]),
+      el('div',{class:'muted'}, new Date(s.date||Date.now()).toLocaleString())
+    ]);
+  }
+
+  function editTemplate(t){
+    listExercises().then(function(exs){
+      var isNew = !t; t = t || {id:null,name:'New Template', description:'', exercises:[]};
+      var container = el('div',{class:'card ring'});
+      var name = el('input',{class:'input', value:t.name});
+      var desc = el('textarea',{class:'textarea', placeholder:'Description (optional)', value:t.description||''});
+      var addRow = el('div',{class:'row wrap'});
+      var exSel = el('select',{class:'select'}, [el('option',{value:''},'Select exercise')]);
+      exs.forEach(function(e){ exSel.append(el('option',{value:e.id}, e.name)); });
+      var sets = el('input',{class:'input', type:'number', min:'1', placeholder:'Sets', value:'3', style:'width:90px'});
+      var reps = el('input',{class:'input', type:'number', min:'1', placeholder:'Reps', value:'8', style:'width:90px'});
+      var weight = el('input',{class:'input', type:'number', placeholder:'Weight', style:'width:120px'});
+      var addBtn = el('button',{class:'btn', onclick:function(){
+        if(!exSel.value) return;
+        var ex = exs.find(function(x){return x.id===exSel.value;});
+        t.exercises.push({exerciseId:ex.id, exerciseName:ex.name, nameSnapshot:ex.name, order:(t.exercises.length||0)+1, defaultSets:+sets.value||3, defaultReps:+reps.value||8, defaultWeight:weight.value?+weight.value:undefined});
+        render();
+      }}, 'Add Exercise');
+      addRow.append(exSel, sets, reps, weight, addBtn);
+
+      var list = el('div',{}, t.exercises.sort(function(a,b){return a.order-b.order}).map(function(e){
+        return el('div',{class:'row', style:'margin:8px 0'},[
+          el('span',{class:'pill'}, String(e.order)), el('div',{}, e.nameSnapshot),
+          el('div',{class:'space'}), el('span',{class:'muted'}, String((e.defaultSets||3)+'x'+(e.defaultReps||8)+(e.defaultWeight? ' @'+e.defaultWeight: ''))),
+          el('button',{class:'btn small',onclick:function(){ var idx=t.exercises.indexOf(e); t.exercises.splice(idx,1); render(); }},'Remove')
+        ]);
+      }));
+
+      var saveBtn = el('button',{class:'btn primary', onclick:function(){ t.name=name.value; t.description=desc.value; saveTemplate(t).then(function(){ setTab('workouts'); }); }}, isNew?'Create Template':'Save Template');
+
+      container.append(
+        el('div',{class:'h2'}, isNew?'New Template':'Edit Template'),
+        el('div',{class:'grid'},[
+          el('label',{class:'label'},'Name'), name,
+          el('label',{class:'label'},'Description'), desc,
+          el('div',{class:'divider'}),
+          el('div',{class:'h2'},'Exercises'), addRow, list,
+          el('div',{class:'row'},[saveBtn, el('div',{class:'space'}), el('button',{class:'btn ghost',onclick:function(){ setTab('workouts'); }},'Cancel')])
+        ])
+      );
+      app.replaceChildren(container);
+    });
+  }
+
+  function startFromTemplate(t){
+    var session = {
+      id:uid(), date:new Date().toISOString(), name:t.name, templateId:t.id, notes:'', completed:false,
+      entries: (t.exercises||[]).map(function(e,i){ return { id:uid(), exerciseId:e.exerciseId, nameSnapshot:e.nameSnapshot, order:i,
+        sets:Array.from({length:e.defaultSets||3}, function(){ return {id:uid(), targetReps:e.defaultReps||8, actualReps:null, weight:(e.defaultWeight!=null?e.defaultWeight:null), rpe:null, restSec:e.defaultRestSec||null, completedAt:null}; }) }; })
+    };
+    saveSession(session).then(function(){ openSession(session); });
+  }
+
+  function newSessionFlow(){
+    var session = { id:uid(), date:new Date().toISOString(), name:'Workout', entries:[], completed:false };
+    saveSession(session).then(function(){ openSession(session); });
+  }
+
+  function openSession(s){
+    listExercises().then(function(exercises){
+      var container = el('div',{class:'grid'});
+      var header = el('div',{class:'section-title'},[
+        el('div',{class:'h1'}, s.name || 'Workout'),
+        el('div',{class:'row'},[
+          RestBadge(restTimer),
+          el('button',{class:'btn small',onclick:function(){ s.completed = !s.completed; saveSession(s).then(render); }}, s.completed?'Mark Active':'Mark Done'),
+          el('button',{class:'btn ghost small',onclick:function(){ setTab('workouts'); }},'Back')
+        ])
+      ]);
+
+      var addControls = el('div',{class:'card'},[
+        el('div',{class:'h2'},'Add Exercise'),
+        el('div',{class:'row wrap'},[
+          (function(sel){ sel.append(el('option',{value:''},'Select')); exercises.forEach(function(e){ sel.append(el('option',{value:e.id}, e.name)); }); return sel; })(el('select',{class:'select', id:'addExSel'})),
+          el('button',{class:'btn',onclick:function(){
+            var sel = document.getElementById('addExSel'); if(!sel.value) return;
+            var ex = exercises.find(function(x){return x.id===sel.value;});
+            s.entries.push({id:uid(), exerciseId:ex.id, nameSnapshot:ex.name, order:s.entries.length, sets:[]}); saveSession(s).then(function(){ openSession(s); });
+          }},'+ Add')
+        ])
+      ]);
+
+      var list = el('div',{}, (s.entries||[]).map(function(ex){ return ExerciseBlock(s, ex); }));
+
+      container.append(header, addControls, list);
+      app.replaceChildren(container);
+    });
+  }
+
+  // NUTRITION
+  function Nutrition(){
+    return getNutrition().then(function(day){
+      var add = el('div',{class:'card'},[
+        el('div',{class:'h2'},'Quick Add Food (by macros)'),
+        el('div',{class:'row wrap'},[
+          el('input',{id:'fName', class:'input', placeholder:'Name (optional)', style:'min-width:160px'}),
+          el('input',{id:'fCal', class:'input', type:'number', placeholder:'kcal', style:'width:100px'}),
+          el('input',{id:'fP', class:'input', type:'number', placeholder:'P g', style:'width:90px'}),
+          el('input',{id:'fC', class:'input', type:'number', placeholder:'C g', style:'width:90px'}),
+          el('input',{id:'fF', class:'input', type:'number', placeholder:'F g', style:'width:90px'}),
+          el('button',{class:'btn', onclick:function(){
+            var nameEl = document.getElementById('fName');
+            var calEl = document.getElementById('fCal');
+            var pEl = document.getElementById('fP');
+            var cEl = document.getElementById('fC');
+            var fEl = document.getElementById('fF');
+            var e={ id:uid(), name:(nameEl.value && nameEl.value.trim())?nameEl.value.trim():'Food', calories:+calEl.value||0, protein:+pEl.value||0, carbs:+cEl.value||0, fat:+fEl.value||0, time:fmtTime() };
+            day.entries.push(e); saveNutrition(day).then(render);
+          }}, 'Add')
+        ])
+      ]);
+
+      var list = el('div',{class:'grid'}, day.entries.map(function(e){
+        return el('div',{class:'card'},[
+          el('div',{class:'row'},[
+            el('div',{class:'h2'}, e.name), el('div',{class:'space'}), el('span',{class:'pill'}, e.calories+' kcal'),
+            el('button',{class:'btn danger small',onclick:function(){ var i=day.entries.indexOf(e); day.entries.splice(i,1); saveNutrition(day).then(render); }}, 'Delete')
+          ]),
+          el('div',{class:'muted'}, 'P '+e.protein+'g · C '+e.carbs+'g · F '+e.fat+'g · '+(e.time||''))
+        ]);
+      }));
+
+      var targets = el('div',{class:'card'},[
+        el('div',{class:'h2'},'Targets'),
+        el('div',{class:'row wrap'},[
+          el('div',{class:'pill'},'Calories '+Math.round(day.totals.calories)+'/'+day.targetCalories),
+          el('div',{class:'pill'},'Protein '+Math.round(day.totals.protein)+'/'+day.targetMacros.protein+'g'),
+          el('div',{class:'pill'},'Carbs '+Math.round(day.totals.carbs)+'/'+day.targetMacros.carbs+'g'),
+          el('div',{class:'pill'},'Fat '+Math.round(day.totals.fat)+'/'+day.targetMacros.fat+'g')
+        ])
+      ]);
+
+      return el('div',{class:'grid'}, [
+        el('div',{class:'section-title'},[el('div',{class:'h1'},'Nutrition'), el('div',{class:'space'}), el('button',{class:'btn small',onclick:function(){ setTab('home'); }},'Today')]),
+        targets, add, list
+      ]);
+    });
+  }
+
+  // HYDRATION
+  function Hydration(){
+    return Promise.all([Settings.get(), getHydration()]).then(function(vals){
+      var s=vals[0], day=vals[1];
+
+      var add = el('div',{class:'card'},[
+        el('div',{class:'h2'},'Quick Add Water'),
+        el('div',{class:'row wrap'},[
+          el('button',{class:'btn',onclick:function(){ day.entries.push({id:uid(), amount:250, time:fmtTime()}); saveHydration(day).then(render); }}, '+250 '+s.units.volume),
+          el('button',{class:'btn',onclick:function(){ day.entries.push({id:uid(), amount:350, time:fmtTime()}); saveHydration(day).then(render); }}, '+350 '+s.units.volume),
+          el('button',{class:'btn',onclick:function(){ day.entries.push({id:uid(), amount:500, time:fmtTime()}); saveHydration(day).then(render); }}, '+500 '+s.units.volume),
+          el('input',{id:"wCustom",class:'input',type:'number',placeholder:'Custom ('+s.units.volume+')',style:'width:160px'}),
+          el('button',{class:'btn',onclick:function(){ var v=+document.getElementById('wCustom').value||0; if(v>0){ day.entries.push({id:uid(), amount:v, time:fmtTime()}); saveHydration(day).then(render); } }}, 'Add')
+        ])
+      ]);
+
+      var list = el('div',{class:'grid'}, day.entries.map(function(e){
+        return el('div',{class:'card row'},[
+          el('div',{}, e.amount+' '+s.units.volume),
+          el('div',{class:'space'}),
+          el('div',{class:'muted'}, e.time||''),
+          el('button',{class:'btn danger small',onclick:function(){ var i=day.entries.indexOf(e); day.entries.splice(i,1); saveHydration(day).then(render); }}, 'Delete')
+        ]);
+      }));
+
+      var progress = el('div',{class:'card'},[
+        el('div',{class:'h2'},'Progress'),
+        el('div',{class:'kpi'},[el('div',{class:'num'}, day.total + ' ' + s.units.volume), el('div',{},' / ' + day.target + ' ' + s.units.volume)]),
+        ringProgress(day.total/day.target*100)
+      ]);
+
+      return el('div',{class:'grid'},[
+        el('div',{class:'section-title'},[ el('div',{class:'h1'},'Hydration'), el('div',{class:'space'}), el('button',{class:'btn small',onclick:function(){ setTab('home'); }},'Home')]),
+        progress, add, list
+      ]);
+    });
+  }
+
+  // MORE
+  function More(){
+    return Settings.get().then(function(s){
+      var unitsSelW = el('select',{class:'select'}, [el('option',{value:'kg',selected:s.units.weight==='kg'},'kg'), el('option',{value:'lb',selected:s.units.weight==='lb'},'lb')]);
+      var unitsSelV = el('select',{class:'select'}, [el('option',{value:'ml',selected:s.units.volume==='ml'},'ml'), el('option',{value:'oz',selected:s.units.volume==='oz'},'oz')]);
+      var themeSel = el('select',{class:'select'}, [
+        el('option',{value:'system',selected:s.theme==='system'},'System'),
+        el('option',{value:'light',selected:s.theme==='light'},'Light'),
+        el('option',{value:'dark',selected:s.theme==='dark'},'Dark')
+      ]);
+
+      var waterTarget = el('input',{class:'input',type:'number',value:s.waterTarget});
+      var calTarget = el('input',{class:'input',type:'number',value:s.dailyCalorieTarget});
+      var pT = el('input',{class:'input',type:'number',value:s.macroTargets.protein});
+      var cT = el('input',{class:'input',type:'number',value:s.macroTargets.carbs});
+      var fT = el('input',{class:'input',type:'number',value:s.macroTargets.fat});
+
+      var saveBtn = el('button',{class:'btn primary',onclick:function(){
+        Settings.save({
+          theme:themeSel.value,
+          units:{weight:unitsSelW.value, volume:unitsSelV.value},
+          waterTarget:+waterTarget.value||s.waterTarget,
+          dailyCalorieTarget:+calTarget.value||s.dailyCalorieTarget,
+          macroTargets:{protein:+pT.value||0, carbs:+cT.value||0, fat:+fT.value||0}
+        }).then(render);
+      }}, 'Save Settings');
+
+      var exportBtn = el('button',{class:'btn',onclick:function(){ exportAll(); }},'Export JSON');
+      var importInp = el('input',{type:'file',accept:'application/json',class:'input'});
+      importInp.addEventListener('change', function(){ if(importInp.files[0]){ importAll(importInp.files[0]).then(function(){ alert('Import done'); render(); }); }});
+
+      var notifyRow = el('div',{class:'row'},[
+        el('button',{class:'btn',onclick:function(){ ensureNotify(); }},'Enable Notifications'),
+        el('div',{class:'muted'},'Used for rest timers & water reminders (if allowed).')
+      ]);
+
+      var iOSTips = el('div',{class:'card'},[
+        el('div',{class:'h2'},'Install to iOS Home Screen'),
+        el('ol',{},[
+          el('li',{},'Open this site in Safari.'),
+          el('li',{},'Tap the Share icon → "Add to Home Screen".'),
+          el('li',{},'Launch from the Home Screen icon for full-screen + offline caching.')
+        ])
+      ]);
+
+      return el('div',{class:'grid'},[
+        el('div',{class:'h1'},'More & Settings'),
+        el('div',{class:'card'},[
+          el('div',{class:'h2'},'Preferences'),
+          el('div',{class:'grid'},[
+            el('label',{class:'label'},'Theme'), themeSel,
+            el('label',{class:'label'},'Units — weight'), unitsSelW,
+            el('label',{class:'label'},'Units — volume'), unitsSelV,
+            el('label',{class:'label'},'Water target'), waterTarget,
+            el('label',{class:'label'},'Daily calories target (kcal)'), calTarget,
+            el('label',{class:'label'},'Protein target (g)'), pT,
+            el('label',{class:'label'},'Carbs target (g)'), cT,
+            el('label',{class:'label'},'Fat target (g)'), fT,
+            el('div',{class:'row'},[saveBtn, el('div',{class:'space'}), notifyRow])
+          ])
+        ]),
+        el('div',{class:'card'},[
+          el('div',{class:'h2'},'Data Backup'),
+          el('div',{class:'row'},[exportBtn, importInp])
+        ]),
+        iOSTips
+      ]);
+    });
+  }
+
+  // HOME
+  function Home(){
+    return Promise.all([Settings.get(), getHydration(), getNutrition(), listSessions()]).then(function(vals){
+      var s=vals[0], hyd=vals[1], nut=vals[2], sessions=vals[3];
+      var todayDone = sessions.find(function(x){ return x.date && x.date.slice(0,10)===todayISO(); });
+
+      var c = el('div',{class:'grid'},[
+        el('div',{class:'section-title'},[el('div',{class:'h1'},'Today'), el('div',{class:'pill'}, new Date().toLocaleDateString())]),
+        el('div',{class:'grid'},[
+          el('div',{class:'card'},[
+            el('div',{class:'h2'},'Hydration'),
+            el('div',{class:'kpi'},[el('div',{class:'num'}, String(hyd.total||0)+' '+s.units.volume), el('div',{},' / '+hyd.target+' '+s.units.volume)]),
+            ringProgress((hyd.total||0)/hyd.target*100),
+            el('div',{class:'row',style:'margin-top:8px'},[
+              el('button',{class:'btn small',onclick:function(){ hyd.entries.push({id:uid(), amount:250, time:fmtTime()}); saveHydration(hyd).then(render); }}, '+250'),
+              el('button',{class:'btn small',onclick:function(){ hyd.entries.push({id:uid(), amount:350, time:fmtTime()}); saveHydration(hyd).then(render); }}, '+350'),
+              el('button',{class:'btn small',onclick:function(){ hyd.entries.push({id:uid(), amount:500, time:fmtTime()}); saveHydration(hyd).then(render); }}, '+500'),
+              el('div',{class:'space'}),
+              el('button',{class:'btn ghost small',onclick:function(){ setTab('hydration'); }},'Open')
+            ])
+          ]),
+          el('div',{class:'card'},[
+            el('div',{class:'h2'},'Nutrition'),
+            el('div',{class:'grid'},[
+              el('div',{class:'kpi'},[el('div',{class:'num'}, String(Math.round(nut.totals.calories))), el('div',{},' / '+nut.targetCalories+' kcal')]),
+              ringProgress(nut.totals.calories / nut.targetCalories * 100),
+              el('div',{class:'row'},[
+                el('div',{class:'pill'}, 'P '+Math.round(nut.totals.protein)+'/'+nut.targetMacros.protein+'g'),
+                el('div',{class:'pill'}, 'C '+Math.round(nut.totals.carbs)+'/'+nut.targetMacros.carbs+'g'),
+                el('div',{class:'pill'}, 'F '+Math.round(nut.totals.fat)+'/'+nut.targetMacros.fat+'g'),
+                el('div',{class:'space'}),
+                el('button',{class:'btn ghost small',onclick:function(){ setTab('nutrition'); }},'Open')
+              ])
+            ])
+          ]),
+          el('div',{class:'card'},[
+            el('div',{class:'h2'},'Workout'),
+            todayDone ? el('div',{},'You have a session today ✅') : el('div',{},'No session logged yet.'),
+            el('div',{class:'row',style:'margin-top:8px'},[
+              el('button',{class:'btn primary',onclick:function(){ newSessionFlow(); }}, todayDone?'Add Sets':'Start Session'),
+              el('button',{class:'btn ghost',onclick:function(){ setTab('workouts'); }},'View All')
+            ])
+          ])
+        ])
+      ]);
+      return c;
+    });
+  }
+
+  // Router + render
+  function render(){
+    if(CURRENT_TAB==='home'){ Home().then(function(node){ app.replaceChildren(node); }); }
+    if(CURRENT_TAB==='workouts'){ (function(){ return Promise.all([listTemplates(), listSessions()]).then(function(vals){
+      var templates = vals[0], sessions = vals[1];
+      var header = el('div',{class:'section-title'},[
+        el('div',{class:'h1'},'Workouts'),
+        el('div',{class:'row'},[
+          el('button',{class:'btn small',onclick:function(){ editTemplate(); }},'+ Template'),
+          el('button',{class:'btn small',onclick:function(){ newSessionFlow(); }},'New Session')
+        ])
+      ]);
+      var list = el('div',{class:'grid'},[
+        el('div',{class:'h2'},'Templates')
+      ].concat(templates.map(function(t){return CardTemplate(t)})).concat([
+        el('div',{class:'divider'}),
+        el('div',{class:'h2'},'Sessions')
+      ]).concat(sessions.map(function(s){return CardSession(s)})));
+      app.replaceChildren(el('div',{class:'grid'},[header, list]));
+    }); })(); }
+    if(CURRENT_TAB==='nutrition'){ Nutrition().then(function(node){ app.replaceChildren(node); }); }
+    if(CURRENT_TAB==='hydration'){ Hydration().then(function(node){ app.replaceChildren(node); }); }
+    if(CURRENT_TAB==='more'){ More().then(function(node){ app.replaceChildren(node); }); }
+  }
+
+  // Self-tests (open with ?test=1)
+  function runTests(){
+    console.log('Running self-tests…');
+    var testDate = '2099-01-01';
+    Settings.get().then(function(s){
+      console.assert(s.waterTarget>0, 'Settings: waterTarget > 0');
+    });
+    getHydration(testDate).then(function(h){
+      h.entries.push({id:uid(), amount:300});
+      return saveHydration(h).then(function(){ return getHydration(testDate); }).then(function(h2){
+        console.assert(h2.total===300, 'Hydration total should be 300');
+        return del_('hydration','hydration-'+testDate);
+      });
+    });
+    getNutrition(testDate).then(function(n){
+      n.entries.push({id:uid(), name:'Test', calories:200, protein:10, carbs:20, fat:5});
+      return saveNutrition(n).then(function(){ return getNutrition(testDate); }).then(function(n2){
+        console.assert(n2.totals.calories===200 && n2.totals.protein===10, 'Nutrition totals ok');
+        return del_('nutrition','nutrition-'+testDate);
+      });
+    });
+  }
+
+  openDB().then(function(){
+    get('settings','user').then(function(v){ if(!v) return put('settings', DEFAULTS); }).then(function(){ render(); });
+    if (location.search.indexOf('test=1')>-1) { runTests(); }
+  });
+  </script>
+</body>
+</html>
